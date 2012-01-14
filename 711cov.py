@@ -20,6 +20,9 @@
 #}}}############################################################################
 
 from argparse import ArgumentParser
+from os import walk
+from os.path import splitext, join
+
 
 def build_arg_parser() -> ArgumentParser:
     """
@@ -37,10 +40,23 @@ def build_arg_parser() -> ArgumentParser:
     return parser
 
 
+def find_all_gcno(root_dir: str) -> iter([str]):
+    """
+    Find all *.gcno files inside the root directory. Return an iterator of the
+    full paths to those *.gcno files.
+    """
+    for dirpath, dirnames, filenames in walk(root_dir):
+        for fn in filenames:
+            if splitext(fn)[1] == '.gcno':
+                yield join(dirpath, fn)
+
+
 def main():
     parser = build_arg_parser()
     args = parser.parse_args()
-    print(args)
+
+    for fn in find_all_gcno(args.root):
+        print(fn)
 
 if __name__ == '__main__':
     main()
