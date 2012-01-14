@@ -20,8 +20,11 @@
 #}}}############################################################################
 
 from argparse import ArgumentParser
-from os import walk
-from os.path import splitext, join
+from sys import exit
+from os import walk, chdir
+from os.path import splitext, join, abspath
+from tempfile import mkdtemp
+from subprocess import check_call
 
 
 def build_arg_parser() -> ArgumentParser:
@@ -36,28 +39,63 @@ def build_arg_parser() -> ArgumentParser:
                         default='./coverage-report/',
                         help='output directory to write the HTML report.')
     parser.add_argument('root', metavar='ROOT',
-                        help='the root directory to search for *.gcno files.')
+                        help='the root directory to search for *.gcno files. '
+                             'It must be writable, and does not contain any '
+                             '*.gcov files.')
     return parser
 
 
-def find_all_gcno(root_dir: str) -> iter([str]):
+def find_all_gcno(abs_root: str) -> iter([str]):
     """
     Find all *.gcno files inside the root directory. Return an iterator of the
     full paths to those *.gcno files.
     """
-    for dirpath, dirnames, filenames in walk(root_dir):
+    for dirpath, dirnames, filenames in walk(abs_root):
         for fn in filenames:
             if splitext(fn)[1] == '.gcno':
                 yield join(dirpath, fn)
 
 
-def main():
+def gcov(gcov_bin: str, abs_root: str, gcno_files: iter([str])) -> bool:
+    """
+    Perform 'gcov' on all *.gcno files from the iterator, putting the result
+    *.gcov files to 'abs_root'. Returns whether 'gcov' finished successfully.
+    """
+
+    # Construct the optinos. Make sure we have *.gcno files to parse.
+    options = [gcov_bin, '--all-blocks',
+                         '--branch-probabilities',
+                         '--branch-counts',
+                         '--preserve-paths']
+    basic_options_length = len(options)
+    options.extend(gcno_files)
+    gcno_count = len(options) - basic_options_length
+    if gcno_count == 0:
+        return False
+
+    print('\033[1;34m==> 711cov:\033[0m Found', gcno_count, '*.gcno files')
+
+    # Invoke gcov
+    chdir(abs_root)
+    with open('/dev/null', 'w') as null_file:
+        check_call(options, stdout=null_file)
+
+    return True
+
+
+def main() -> int:
     parser = build_arg_parser()
     args = parser.parse_args()
+    abs_root = abspath(args.root)
+    gcno_files = find_all_gcno(abs_root)
+    if not gcov(args.gcov, abs_root, gcno_files):
+        print('\033[1;31m==> 711cov:\033[0m No *.gcno files found in', abs_root)
+        return 1
 
-    for fn in find_all_gcno(args.root):
-        print(fn)
+    return 0
+
 
 if __name__ == '__main__':
-    main()
+    err_code = main()
+    exit(err_code)
 
