@@ -25,6 +25,7 @@ from os.path import splitext, join, abspath, relpath
 from tempfile import mkdtemp
 from subprocess import check_call
 from shutil import move
+from collections import defaultdict
 
 
 def find_with_ext(abs_root: str, compile_root: str, ext: str) -> iter([str]):
@@ -76,4 +77,49 @@ def move_gcov(source_dir: str, target_dir: str) -> None:
     for fn in listdir(source_dir):
         if splitext(fn)[1] == '.gcov':
             move(join(source_dir, fn), target_dir)
+
+def unmangle_gcov_filename(gcov_filename: str):
+    """
+    Convert the *.gcov filenames (e.g. "#usr#include#stdio.h") back to a path.
+    """
+    return gcov_filename.replace('^', '..').replace('#', '/').replace('~', ':')
+
+
+class SourceFile(object):
+    """
+    Represents a source file.
+    """
+    def __init__(self):
+        self.gcov_filenames = []
+
+    def add(self, gcov_filename: str):
+        """
+        Add the analysis of a *.gcov file into this source file.
+        """
+        self.gcov_filenames.append(gcov_filename)
+
+
+def collect_gcov(gcov_dir: str, abs_compile_root: str, ignored_prefixes = ('/usr',)) -> {str: SourceFile}:
+    """
+    Collect all *.gcov files inside 'gcov_dir', but ignore those with a path
+    starting with 'ignored_prefixes'.
+    """
+    res_dict = defaultdict(SourceFile)
+    for filename in listdir(gcov_dir):
+        (fn, ext) = splitext(filename)
+        if ext != '.gcov':
+            continue
+
+        source_fn = unmangle_gcov_filename(fn)
+        if source_fn.startswith(ignored_prefixes):
+            continue
+
+        rel_source_fn = relpath(source_fn, start=abs_compile_root)
+        res_dict[rel_source_fn].add(fn)
+
+    return res_dict
+
+
+
+
 

@@ -21,6 +21,7 @@
 
 from argparse import ArgumentParser
 from sys import exit
+from shutil import rmtree
 from lib711cov import *
 
 
@@ -47,12 +48,18 @@ def build_arg_parser() -> ArgumentParser:
 def main() -> int:
     parser = build_arg_parser()
     args = parser.parse_args()
+    abs_compile_root = abspath(args.compile_root)
     gcno_files = find_with_ext(args.gcno_root, args.compile_root, '.gcno')
     res_dir = gcov(args.gcov, args.compile_root, gcno_files)
     if not res_dir:
         return 1
 
-    print(res_dir)
+    gcovs = collect_gcov(res_dir, abs_compile_root)
+    for p, q in gcovs.items():
+        print(p, '=>', q.gcov_filenames)
+
+    rmtree(res_dir)
+
     return 0
 
 
