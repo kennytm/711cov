@@ -21,11 +21,14 @@
 
 from sys import exit
 from os import walk, chdir, listdir, getcwd
-from os.path import splitext, join, abspath, relpath
+from os.path import splitext, join, abspath, relpath, dirname
 from tempfile import mkdtemp
 from subprocess import check_call
-from shutil import move
+from shutil import move, copy
 from collections import defaultdict
+from html import escape
+from urllib.parse import quote
+import re
 
 
 def find_with_ext(abs_root: str, compile_root: str, ext: str) -> iter([str]):
@@ -85,21 +88,114 @@ def unmangle_gcov_filename(gcov_filename: str):
     return gcov_filename.replace('^', '..').replace('#', '/').replace('~', ':')
 
 
+class SourceLine(object):
+    """
+    Represents a line of source code.
+    """
+    normal_source_re = re.compile(r'\s*(-|#{5}|={5}|\d+):\s*([1-9]\d*):(.*)')
+
+    def __init__(self, linenum: int, source: str, coverage: int):
+        self.linenum = linenum
+        self.source = source
+        self.coverage = coverage
+
+    @classmethod
+    def from_gcov_match(cls, match: re.match):
+        (coverage_str, linenum_str, source) = match.groups()
+        if coverage_str == '-':
+            coverage = -1
+        elif coverage_str in ('#####', '====='):
+            coverage = 0
+        else:
+            coverage = int(coverage_str)
+        return cls(int(linenum_str), source, coverage)
+
+
+    def to_html(self) -> str:
+        """
+        Convert the source line to HTML representation.
+        """
+        if self.coverage < 0:
+            coverage_str = '-'
+            coverage_class = 'na'
+        elif self.coverage == 0:
+            coverage_str = '0'
+            coverage_class = 'zero'
+        else:
+            coverage_str = str(self.coverage)
+            coverage_class = 'all'
+
+        return '<tr id="#line-{2}"><td class="cov-health-{0}">{1}</td><td>{2}</td><td>{3}</td></tr>\n'.format(
+            coverage_class, coverage_str, self.linenum, escape(self.source),
+        )
+
+    def combine(self, other) -> None:
+        """
+        Combine this with another SourceLine object representing the same line.
+        """
+        assert self.linenum == other.linenum
+        assert self.source == other.source
+        if other.coverage >= 0:
+            if self.coverage < 0:
+                self.coverage = other.coverage
+            else:
+                self.coverage += other.coverage
+
+
 class SourceFile(object):
     """
     Represents a source file.
     """
     def __init__(self):
-        self.gcov_filenames = []
+        self.source_code = []
+        self.source_name = ''
 
     def add(self, gcov_filename: str):
         """
         Add the analysis of a *.gcov file into this source file.
         """
-        self.gcov_filenames.append(gcov_filename)
+
+        # Step 1: Read the file.
+        source_lines = []
+        with open(gcov_filename, 'r') as f:
+            for line in f:
+                source_match = SourceLine.normal_source_re.match(line)
+                if source_match:
+                    source_lines.append(SourceLine.from_gcov_match(source_match))
+                    continue
+
+        # Step 2: Combine.
+        if self.source_code:
+            for orig, new in zip(self.source_code, source_lines):
+                orig.combine(new)
+        else:
+            self.source_code = source_lines
+
+    def coverage_stats(self) -> (int, int):
+        """
+        Return the coverage statistics. The first element is the number of lines
+        covered, and the second element is the total number of source lines.
+        """
+        covered = sum(1 for line in self.source_code if line.coverage > 0)
+        lines = sum(1 for line in self.source_code if line.coverage >= 0)
+        return (covered, lines)
+
+    def to_html(self) -> str:
+        """
+        Convert the source code to HTML representation.
+        """
+        result = ["""
+        <hr />
+        <div><table class="source-file">
+        <caption>{0}</caption>
+        <colgroup><col class="cov-lines" /><col class="line-nums" /><col class="source-lines" /></colgroup>
+        """.format(escape(self.source_name))]
+        result.extend(line.to_html() for line in self.source_code)
+        result.append('</table></div>')
+        return '\n'.join(result)
 
 
-def collect_gcov(gcov_dir: str, abs_compile_root: str, ignored_prefixes = ('/usr',)) -> {str: SourceFile}:
+def collect_gcov(gcov_dir: str, abs_compile_root: str, ignored_prefixes = ('/usr',)) -> iter([SourceFile]):
     """
     Collect all *.gcov files inside 'gcov_dir', but ignore those with a path
     starting with 'ignored_prefixes'.
@@ -115,11 +211,106 @@ def collect_gcov(gcov_dir: str, abs_compile_root: str, ignored_prefixes = ('/usr
             continue
 
         rel_source_fn = relpath(source_fn, start=abs_compile_root)
-        res_dict[rel_source_fn].add(fn)
+        res_dict[rel_source_fn].add(join(gcov_dir, filename))
 
-    return res_dict
+    for source_name, source_file in sorted(res_dict.items()):
+        source_file.source_name = source_name
+        yield source_file
+
+
+def to_html_filename(source_file_name: str) -> str:
+    """
+    Get the file name corresponding to the source file.
+    """
+    def escape_char(m: re.match) -> str:
+        c = m.group()
+        if c == '/':
+            return '--'
+        elif c == '-':
+            return '-m'
+        else:
+            return '-' + hex(ord(c))[2:]
+
+    return 'source-' + re.sub(r'[^.\w]', escape_char, source_file_name) + '.html'
+
+
+def copy_sorttable_js(directory: str) -> None:
+    """
+    Copy 'sorttable.js' into the 'directory'.
+    """
+    copy(join(dirname(__file__), 'sorttable.js'), directory)
 
 
 
+def html_index(source_files: iter([SourceFile]), compile_root: str) -> str:
+    """
+    Generate the index page to the coverage reports.
+    """
+    def single_summary(source_file: SourceFile) -> str:
+        (covered, lines) = source_file.coverage_stats()
+        if lines == 0:
+            coverage_percent = '---'
+            coverage_health = 'na'
+        elif covered == lines:
+            coverage_percent = '100.00'
+            coverage_health = 'all'
+        elif covered == 0:
+            coverage_percent = '0.00'
+            coverage_health = 'zero'
+        else:
+            percent = (100 * covered) / lines
+            coverage_percent = '{:.2f}'.format(percent)
+            if coverage_percent == '100.00':
+                coverage_percent = '99.99'
+            elif coverage_percent == '0.00':
+                coverage_percent = '0.01'
+            if percent >= 90:
+                coverage_health = 'good'
+            elif percent >= 75:
+                coverage_health = 'normal'
+            else:
+                coverage_health = 'bad'
+
+        return '<tr><td><a href="{3}">{0}</a></td><td class="cov-health-{1}">{2}%</td>'.format(
+            escape(source_file.source_name), coverage_health, coverage_percent,
+            to_html_filename(source_file.source_name)
+        )
+
+    title = escape(compile_root)
+
+    html_res = ["""
+    <!DOCTYPE>
+    <html>
+    <head>
+    <title>Coverage report for """ + title + """</title>
+    <style type="text/css">
+    /*<![CDATA[*/
+    .cov-health-all { background-color: #80FF80; }
+    .cov-health-zero { background-color: black; color: white; }
+    .cov-health-good { background-color: yellow; }
+    .cov-health-normal { background-color: orange; }
+    .cov-health-bad { background-color: red; }
+    td:last-child { text-align: right; }
+    table { border-collapse: collapse; }
+    tr { border: 1px solid black; }
+    td { padding: 2px; }
+    /*]]>*/
+    </style>
+    <script src="sorttable.js"></script>
+    </head>
+    <body>
+    <h1>Coverage report for """ + title + """</h1>
+    <div><table class="sortable">
+    <thead><tr><th>File</th><th>Line cov.</th></tr></thead>
+    <tbody>
+    """]
+
+    html_res.extend(single_summary(s) for s in source_files)
+    html_res.append('</tbody></table></div></body></html>')
+
+    return '\n'.join(html_res)
+
+def html_footer() -> str:
+    return '</body></html>'
 
 

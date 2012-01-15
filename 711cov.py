@@ -22,6 +22,7 @@
 from argparse import ArgumentParser
 from sys import exit
 from shutil import rmtree
+from os import makedirs, getcwd, chdir
 from lib711cov import *
 
 
@@ -46,6 +47,8 @@ def build_arg_parser() -> ArgumentParser:
 
 
 def main() -> int:
+    cwd = getcwd()
+
     parser = build_arg_parser()
     args = parser.parse_args()
     abs_compile_root = abspath(args.compile_root)
@@ -54,12 +57,19 @@ def main() -> int:
     if not res_dir:
         return 1
 
-    gcovs = collect_gcov(res_dir, abs_compile_root)
-    for p, q in gcovs.items():
-        print(p, '=>', q.gcov_filenames)
+    gcovs = list(collect_gcov(res_dir, abs_compile_root))
+
+    chdir(cwd)
+    try:
+        makedirs(args.output)
+    except OSError:
+        pass
+    copy_sorttable_js(args.output)
+    chdir(args.output)
+    with open('index.html', 'w') as f:
+        f.write(html_index(gcovs, args.compile_root))
 
     rmtree(res_dir)
-
     return 0
 
 
