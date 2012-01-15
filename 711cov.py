@@ -68,6 +68,10 @@ def main() -> int:
     chdir(args.output)
     with open('index.html', 'w') as f:
         f.write(html_index(gcovs, args.compile_root))
+    for source_file in gcovs:
+        html_file_name = to_html_filename(source_file.source_name)
+        with open(html_file_name, 'w') as f:
+            f.write(source_file.to_html())
 
     rmtree(res_dir)
     return 0

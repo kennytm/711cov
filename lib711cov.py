@@ -116,7 +116,7 @@ class SourceLine(object):
         Convert the source line to HTML representation.
         """
         if self.coverage < 0:
-            coverage_str = '-'
+            coverage_str = '1e308'
             coverage_class = 'na'
         elif self.coverage == 0:
             coverage_str = '0'
@@ -125,7 +125,7 @@ class SourceLine(object):
             coverage_str = str(self.coverage)
             coverage_class = 'all'
 
-        return '<tr id="#line-{2}"><td class="cov-health-{0}">{1}</td><td>{2}</td><td>{3}</td></tr>\n'.format(
+        return '<tr id="line-{2}" class="cov-health-{0}"><td>{1}</td><td>{2}</td><td>{3}</td></tr>\n'.format(
             coverage_class, coverage_str, self.linenum, escape(self.source),
         )
 
@@ -184,14 +184,56 @@ class SourceFile(object):
         """
         Convert the source code to HTML representation.
         """
+        source_name = escape(self.source_name)
+
         result = ["""
-        <hr />
-        <div><table class="source-file">
-        <caption>{0}</caption>
-        <colgroup><col class="cov-lines" /><col class="line-nums" /><col class="source-lines" /></colgroup>
-        """.format(escape(self.source_name))]
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <title>Coverage report of file """ + source_name + """</title>
+        <style type="text/css">
+        /*<![CDATA[*/
+        .cov-health-zero td { color: white; }
+        .cov-health-zero:nth-child(odd) td { background-color: #CC0000; }
+        .cov-health-zero:nth-child(even) td { background-color: #DD0000; }
+        .cov-health-na td { color: silver; }
+        .cov-health-na td:first-child { visibility: hidden; }
+        tbody td:last-child { text-align: left; font-family: monospace;
+                              white-space: pre; }
+        table { border-collapse: collapse; }
+        div {  width: 100%; overflow: hidden; }
+        td { text-align: right; padding-left: 2em; }
+        tbody tr:nth-child(odd) { background-color: #FFFFCC; }
+        tbody tr:nth-child(even) { background-color: #FFFFDD; }
+        tbody tr:hover td:last-child { font-weight: bold; }
+        tbody td:nth-child(2) { font-size: smaller; color: silver; }
+        /*]]>*/
+        </style>
+        <script src="sorttable.js"></script>
+        </head>
+        <body>
+        <p><a href="index.html">&lArr; Back</a> | Go to line #<input type="number" id="goto" /></p>
+        <h1>""" + source_name + """</h1>
+        <div><table class="sortable">
+        <thead><tr><th>Cov</th><th>Line</th><th class="sorttable_nosort">Source</th></tr></thead>
+        <tbody>
+        """]
         result.extend(line.to_html() for line in self.source_code)
-        result.append('</table></div>')
+        result.append("""
+        </tbody>
+        </table>
+        </div>
+        <script>
+        //<![CDATA[
+        document.getElementById('goto').onchange = function()
+        {
+            location = "#line-" + this.value;
+        }
+        //]]>
+        </script>
+        </body>
+        </html>
+        """)
         return '\n'.join(result)
 
 
@@ -279,7 +321,7 @@ def html_index(source_files: iter([SourceFile]), compile_root: str) -> str:
     title = escape(compile_root)
 
     html_res = ["""
-    <!DOCTYPE>
+    <!DOCTYPE html>
     <html>
     <head>
     <title>Coverage report for """ + title + """</title>
@@ -310,7 +352,6 @@ def html_index(source_files: iter([SourceFile]), compile_root: str) -> str:
 
     return '\n'.join(html_res)
 
-def html_footer() -> str:
-    return '</body></html>'
+
 
 
