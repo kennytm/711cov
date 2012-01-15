@@ -36,11 +36,11 @@ def build_arg_parser() -> ArgumentParser:
                         default='./coverage-report/',
                         help='output directory to write the HTML report.')
     parser.add_argument('gcno_root', metavar='GCNO_ROOT',
-                        help='the root directory to search for *.gcno files. '
+                        help='the root directory to search for *.gcno files. ')
+    parser.add_argument('compile_root', metavar='COMPILE_ROOT',
+                        help='from where the source files are compiled.'
                              'It must be writable, and does not contain any '
                              '*.gcov files.')
-    parser.add_argument('compile_root', metavar='COMPILE_ROOT',
-                        help='from where the source files are compiled.')
     return parser
 
 
