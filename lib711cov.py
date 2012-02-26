@@ -23,7 +23,7 @@ from sys import exit
 from os import walk, chdir, listdir, getcwd
 from os.path import splitext, join, abspath, relpath, dirname
 from tempfile import mkdtemp
-from subprocess import check_call
+from subprocess import check_call, Popen, PIPE
 from shutil import move, copy
 from collections import defaultdict
 from html import escape
@@ -214,12 +214,52 @@ class SourceLine(object):
             self.branches[branch_id] = branch
 
 
+class SourceFunction(object):
+    """
+    Represents a function.
+    """
+    regex = re.compile(r'function (\S+) called (\d+) returned (\d+)% blocks executed (\d+)%')
+
+    def __init__(self, name: str, linenum: int, called: int, returned: int, blocks: int):
+        self.name = name
+        self.linenum = linenum
+        self.pretty_name = name
+        self.called = called
+        self.returned = returned
+        self.blocks = blocks
+
+    @classmethod
+    def from_gcov_match(cls, linenum: int, match: re.match):
+        (name, called_str, returned_str, blocks_str) = match.groups()
+        return cls(name, linenum, int(called_str), int(returned_str), int(blocks_str))
+
+    def to_html(self) -> str:
+        """
+        Convert the function to HTML representation.
+        """
+        coverage_class = 'zero' if self.called == 0 else 'all'
+        return '''<tr id="func-{}" class="cov-health-{}">
+                    <td><a href="#line-{}">{}</a></td>
+                    <td>{}</td><td>{}%</td><td>{}%</td>
+                </tr>\n'''.format(
+            self.name, coverage_class, self.linenum, self.pretty_name, self.called,
+            self.returned, self.blocks
+        )
+
+    def combine(self, other) -> None:
+        assert self.name == other.name
+        self.called += other.called
+        self.returned = max(self.returned, other.returned)
+        self.blocks = max(self.blocks, other.blocks)
+
+
 class SourceFile(object):
     """
     Represents a source file.
     """
     def __init__(self):
         self.source_code = []
+        self.source_functions = []
         self.source_name = ''
 
     def add(self, gcov_filename: str):
@@ -229,6 +269,7 @@ class SourceFile(object):
 
         # Step 1: Read the file.
         source_lines = []
+        source_functions = []
         with open(gcov_filename, 'r') as f:
             for line in f:
                 source_match = SourceLine.regex.match(line)
@@ -239,6 +280,11 @@ class SourceFile(object):
                 if branch_match:
                     source_lines[-1].add_branch(SourceBranch.from_gcov_match(branch_match))
                     continue
+                function_match = SourceFunction.regex.match(line)
+                if function_match:
+                    linenum = source_lines[-1].linenum + 1
+                    source_functions.append(SourceFunction.from_gcov_match(linenum, function_match))
+                    continue
 
         # Step 2: Combine.
         if self.source_code:
@@ -246,6 +292,11 @@ class SourceFile(object):
                 orig.combine(new)
         else:
             self.source_code = source_lines
+        if self.source_functions:
+            for orig, new in zip(self.source_functions, source_functions):
+                orig.combine(new)
+        else:
+            self.source_functions = source_functions
 
     def coverage_stats(self) -> (int, int):
         """
@@ -270,6 +321,20 @@ class SourceFile(object):
             calls_count += len(calls)
         return (br_covered, br_count, calls_covered, calls_count)
 
+    def function_stats(self) -> (int, int):
+        covered = sum(1 for func in self.source_functions if func.called > 0)
+        funcs = len(self.source_functions)
+        return (covered, funcs)
+
+    def decode_cpp_function_names(self) -> None:
+        """
+        Decode the C++ function names.
+        """
+        with Popen(['c++filt'], stdin=PIPE, stdout=PIPE, universal_newlines=True) as proc:
+            for func in self.source_functions:
+                proc.stdin.write(func.name + '\n')
+                func.pretty_name = proc.stdout.readline().rstrip('\n\r')
+
     def to_html(self) -> str:
         """
         Convert the source code to HTML representation.
@@ -280,6 +345,10 @@ class SourceFile(object):
         (br_covered, br_count, calls_covered, calls_count) = self.branch_stats()
         branch_stats = "{} / {}".format(br_covered, br_count)
         call_stats = "{} / {}".format(calls_covered, calls_count)
+        (fn_covered, fn_count) = self.function_stats()
+        fn_stats = "{} / {}".format(fn_covered, fn_count)
+
+        self.decode_cpp_function_names()
 
         result = ["""
         <!DOCTYPE html>
@@ -298,15 +367,16 @@ class SourceFile(object):
         .branch-taken:hover { color: black; }
         .branch-not-taken { color: red; }
         .branch-not-taken:hover { color: maroon; }
-        .sortable tbody td:last-child { text-align: left; font-family: monospace; white-space: pre; }
+        #source tbody td:last-child, #funcs tbody td:first-child
+            { text-align: left; font-family: monospace; white-space: pre; }
         .sortable { border-collapse: collapse; }
         div {  width: 100%; overflow: hidden; }
         .sortable td { text-align: right; padding-left: 2em; }
         .sortable tbody tr:nth-child(odd) { background-color: #FFFFCC; }
         .sortable tbody tr:nth-child(even) { background-color: #FFFFDD; }
-        .sortable tbody tr:hover td:last-child { font-weight: bold; }
-        .sortable tbody td:first-child { max-width: 7em; font-size: smaller; }
-        .sortable tbody td:nth-child(2) { font-size: smaller; color: silver; }
+        #source tbody tr:hover td:last-child { font-weight: bold; }
+        #source tbody td:first-child { max-width: 7em; font-size: smaller; }
+        #source tbody td:nth-child(2) { font-size: smaller; color: silver; }
         #summary { float: right; border-collapse: collapse;  }
         #summary td { border: 1px solid black; }
         caption { font-weight: bold; }
@@ -323,6 +393,7 @@ class SourceFile(object):
         <tr><td>Lines</td><td>""" + lines_stats + """</td></tr>
         <tr><td>Branches</td><td>""" + branch_stats + """</td></tr>
         <tr><td>Calls</td><td>""" + call_stats + """</td></tr>
+        <tr><td><a href="#functions">Functions</a></td><td>""" + fn_stats + """</td></tr>
         </ul>
         </table>
         <table class="sortable" id="source">
@@ -330,6 +401,16 @@ class SourceFile(object):
         <tbody>
         """]
         result.extend(line.to_html() for line in self.source_code)
+        result.append("""
+        </tbody>
+        </table>
+        </div>
+        <h2 id="functions">Functions</h2>
+        <div>
+        <table class="sortable" id="funcs">
+        <thead><tr><th>Function</th><th>Calls</th><th>Ret.</th><th>Blk. Exec.</th></tr></thead>
+        <tbody>""")
+        result.extend(func.to_html() for func in self.source_functions)
         result.append("""
         </tbody>
         </table>
@@ -424,18 +505,23 @@ def html_index(source_files: iter([SourceFile]), compile_root: str) -> str:
     def single_summary(source_file: SourceFile) -> str:
         (covered, lines) = source_file.coverage_stats()
         (br_covered, br_count, _, _) = source_file.branch_stats()
+        (fn_covered, fn_count) = source_file.function_stats()
         (coverage_percent, coverage_health) = to_percentage(covered, lines, 90, 75)
         (branch_percent, branch_health) = to_percentage(br_covered, br_count, 75, 50)
+        (fn_percent, fn_health) = to_percentage(fn_covered, fn_count, 90, 75)
+
 
         return '''<tr>
                     <td><a href="{}">{}</a></td>
+                    <td class="cov-health-{}" title="{}/{}">{}%</td>
                     <td class="cov-health-{}" title="{}/{}">{}%</td>
                     <td class="cov-health-{}" title="{}/{}">{}%</td>
                   </tr>'''.format(
             to_html_filename(source_file.source_name),
             escape(source_file.source_name),
             coverage_health, covered, lines, coverage_percent,
-            branch_health, br_covered, br_count, branch_percent
+            branch_health, br_covered, br_count, branch_percent,
+            fn_health, fn_covered, fn_count, fn_percent
         )
 
     title = escape(compile_root)
@@ -452,11 +538,10 @@ def html_index(source_files: iter([SourceFile]), compile_root: str) -> str:
     .cov-health-good { background-color: yellow; }
     .cov-health-normal { background-color: orange; }
     .cov-health-bad { background-color: red; }
-    td { text-align: right; }
+    td { text-align: right; padding: 0.1em 0.5em; }
     td:first-child { text-align: left; }
     table { border-collapse: collapse; }
     tr { border: 1px solid black; }
-    td { padding: 2px; }
     /*]]>*/
     </style>
     <script src="sorttable.js"></script>
@@ -464,7 +549,7 @@ def html_index(source_files: iter([SourceFile]), compile_root: str) -> str:
     <body>
     <h1>Coverage report for """ + title + """</h1>
     <div><table class="sortable">
-    <thead><tr><th>File</th><th>Line cov.</th><th>Br. cov.</th></tr></thead>
+    <thead><tr><th>File</th><th>Lines</th><th>Branch</th><th>Functions</th></tr></thead>
     <tbody>
     """]
 
