@@ -270,7 +270,7 @@ class SourceFile(object):
         # Step 1: Read the file.
         source_lines = []
         source_functions = []
-        with open(gcov_filename, 'r') as f:
+        with open(gcov_filename, 'r', errors='replace') as f:
             for line in f:
                 source_match = SourceLine.regex.match(line)
                 if source_match:
@@ -358,6 +358,8 @@ class SourceFile(object):
         <style type="text/css">
         /*<![CDATA[*/
         .cov-health-zero td { color: white; }
+        .cov-health-zero a { color: #CCCCFF; }
+        .cov-health-zero a:visited { color: #FFCCFF; }
         .cov-health-zero:nth-child(odd) td { background-color: #CC0000; }
         .cov-health-zero:nth-child(even) td { background-color: #DD0000; }
         .cov-health-na td { color: silver; }
@@ -375,7 +377,7 @@ class SourceFile(object):
         .sortable tbody tr:nth-child(odd) { background-color: #FFFFCC; }
         .sortable tbody tr:nth-child(even) { background-color: #FFFFDD; }
         #source tbody tr:hover td:last-child { font-weight: bold; }
-        #source tbody td:first-child { max-width: 7em; font-size: smaller; }
+        #source tbody td:first-child { max-width: 7em; font-size: smaller; word-wrap: break-word; }
         #source tbody td:nth-child(2) { font-size: smaller; color: silver; }
         #summary { float: right; border-collapse: collapse;  }
         #summary td { border: 1px solid black; }
