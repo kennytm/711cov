@@ -40,7 +40,7 @@ def build_arg_parser() -> ArgumentParser:
     parser.add_argument('gcno_root', metavar='GCNO_ROOT',
                         help='the root directory to search for *.gcno files. ')
     parser.add_argument('compile_root', metavar='COMPILE_ROOT',
-                        help='from where the source files are compiled.'
+                        help='from where the source files are compiled. '
                              'It must be writable, and does not contain any '
                              '*.gcov files.')
     return parser

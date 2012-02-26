@@ -51,8 +51,7 @@ def gcov(gcov_bin: str, compile_root: str, gcno_files: iter([str])) -> str or No
     """
 
     # Construct the optinos. Make sure we have *.gcno files to parse.
-    options = [gcov_bin, '--all-blocks',
-                         '--branch-probabilities',
+    options = [gcov_bin, '--branch-probabilities',
                          '--branch-counts',
                          '--preserve-paths']
     basic_options_length = len(options)
@@ -88,16 +87,73 @@ def unmangle_gcov_filename(gcov_filename: str):
     return gcov_filename.replace('^', '..').replace('#', '/').replace('~', ':')
 
 
+class SourceBranch(object):
+    """
+    Represents a branch in a source line.
+    """
+    regex = re.compile(r'''
+        (?P<type> branch|call)\s+
+        (?P<id> \d+)\s
+        (?:
+            never\sexecuted
+        |
+            (?:taken|returned)\s
+            (?P<count> \d+)
+            (?:
+                \s+\( (?P<info> [^)]*) \)
+            )?
+        )''', re.X)
+
+    def __init__(self, count: int, id_: int, type_: str, info: str or None):
+        self.count = count
+        self.id_ = id_
+        self.type_ = type_
+        self.info = info
+
+    @classmethod
+    def from_gcov_match(cls, match: re.match):
+        count = int(match.group('count') or '0')
+        id_ = int(match.group('id'))
+        type_ = match.group('type')
+        info = match.group('info')
+        return cls(count, id_, type_, info)
+
+    def to_html(self) -> str:
+        """
+        Convert the source line to HTML representation.
+        """
+        if self.count:
+            class_name = 'branch-taken'
+            symbol = '▷' if self.type_ == 'branch' else '○'
+        else:
+            class_name = 'branch-not-taken'
+            symbol = '▶' if self.type_ == 'branch' else '●'
+
+        info_text = ' (' + self.info + ')' if self.info else ''
+        return '<span class="branch {}" title="{} {}{} × {}">{}</span>'.format(
+            class_name, self.type_, self.id_, info_text, self.count, symbol
+        )
+
+    def combine(self, other) -> None:
+        """
+        Combine this with another SourceBranch object representing the same branch.
+        """
+        assert self.id_ == other.id_
+        assert self.type_ == other.type_
+        self.count += other.count
+
+
 class SourceLine(object):
     """
     Represents a line of source code.
     """
-    normal_source_re = re.compile(r'\s*(-|#{5}|={5}|\d+):\s*([1-9]\d*):(.*)')
+    regex = re.compile(r'\s*(-|#{5}|={5}|\d+):\s*([1-9]\d*):(.*)')
 
     def __init__(self, linenum: int, source: str, coverage: int):
         self.linenum = linenum
         self.source = source
         self.coverage = coverage
+        self.branches = {}
 
     @classmethod
     def from_gcov_match(cls, match: re.match):
@@ -125,8 +181,12 @@ class SourceLine(object):
             coverage_str = str(self.coverage)
             coverage_class = 'all'
 
-        return '<tr id="line-{2}" class="cov-health-{0}"><td>{1}</td><td>{2}</td><td>{3}</td></tr>\n'.format(
+        sorted_branches = sorted(self.branches.values(), key=lambda s: s.id_)
+        branches_html = ''.join(b.to_html() for b in sorted_branches)
+
+        return '<tr id="line-{2}" class="cov-health-{0}"><td>{4}</td><td>{1}</td><td>{2}</td><td>{3}</td></tr>\n'.format(
             coverage_class, coverage_str, self.linenum, escape(self.source),
+            branches_html
         )
 
     def combine(self, other) -> None:
@@ -140,6 +200,18 @@ class SourceLine(object):
                 self.coverage = other.coverage
             else:
                 self.coverage += other.coverage
+        for branch in other.values():
+            self.add_branch(branch)
+
+    def add_branch(self, branch: SourceBranch) -> None:
+        """
+        Insert a branch information to this line.
+        """
+        branch_id = branch.id_
+        if branch_id in self.branches:
+            self.branches[branch_id].combine(branch)
+        else:
+            self.branches[branch_id] = branch
 
 
 class SourceFile(object):
@@ -159,9 +231,13 @@ class SourceFile(object):
         source_lines = []
         with open(gcov_filename, 'r') as f:
             for line in f:
-                source_match = SourceLine.normal_source_re.match(line)
+                source_match = SourceLine.regex.match(line)
                 if source_match:
                     source_lines.append(SourceLine.from_gcov_match(source_match))
+                    continue
+                branch_match = SourceBranch.regex.match(line)
+                if branch_match:
+                    source_lines[-1].add_branch(SourceBranch.from_gcov_match(branch_match))
                     continue
 
         # Step 2: Combine.
@@ -180,11 +256,30 @@ class SourceFile(object):
         lines = sum(1 for line in self.source_code if line.coverage >= 0)
         return (covered, lines)
 
+    def branch_stats(self) -> (int, int, int, int):
+        br_covered = 0
+        br_count = 0
+        calls_covered = 0
+        calls_count = 0
+        for line in self.source_code:
+            branches = [b for b in line.branches.values() if b.type_ == 'branch']
+            calls = [b for b in line.branches.values() if b.type_ == 'call']
+            br_covered += sum(1 for b in branches if b.count > 0)
+            br_count += len(branches)
+            calls_covered += sum(1 for b in calls if b.count > 0)
+            calls_count += len(calls)
+        return (br_covered, br_count, calls_covered, calls_count)
+
     def to_html(self) -> str:
         """
         Convert the source code to HTML representation.
         """
         source_name = escape(self.source_name)
+        (covered, lines) = self.coverage_stats()
+        lines_stats = "{} / {} ({} lines of code)".format(covered, lines, len(self.source_code))
+        (br_covered, br_count, calls_covered, calls_count) = self.branch_stats()
+        branch_stats = "{} / {}".format(br_covered, br_count)
+        call_stats = "{} / {}".format(calls_covered, calls_count)
 
         result = ["""
         <!DOCTYPE html>
@@ -197,16 +292,24 @@ class SourceFile(object):
         .cov-health-zero:nth-child(odd) td { background-color: #CC0000; }
         .cov-health-zero:nth-child(even) td { background-color: #DD0000; }
         .cov-health-na td { color: silver; }
-        .cov-health-na td:first-child { visibility: hidden; }
-        tbody td:last-child { text-align: left; font-family: monospace;
-                              white-space: pre; }
-        table { border-collapse: collapse; }
+        .cov-health-na td:nth-child(2) { visibility: hidden; }
+        .branch { cursor: help; }
+        .branch-taken { color: silver; }
+        .branch-taken:hover { color: black; }
+        .branch-not-taken { color: red; }
+        .branch-not-taken:hover { color: maroon; }
+        .sortable tbody td:last-child { text-align: left; font-family: monospace; white-space: pre; }
+        .sortable { border-collapse: collapse; }
         div {  width: 100%; overflow: hidden; }
-        td { text-align: right; padding-left: 2em; }
-        tbody tr:nth-child(odd) { background-color: #FFFFCC; }
-        tbody tr:nth-child(even) { background-color: #FFFFDD; }
-        tbody tr:hover td:last-child { font-weight: bold; }
-        tbody td:nth-child(2) { font-size: smaller; color: silver; }
+        .sortable td { text-align: right; padding-left: 2em; }
+        .sortable tbody tr:nth-child(odd) { background-color: #FFFFCC; }
+        .sortable tbody tr:nth-child(even) { background-color: #FFFFDD; }
+        .sortable tbody tr:hover td:last-child { font-weight: bold; }
+        .sortable tbody td:first-child { max-width: 7em; font-size: smaller; }
+        .sortable tbody td:nth-child(2) { font-size: smaller; color: silver; }
+        #summary { float: right; border-collapse: collapse;  }
+        #summary td { border: 1px solid black; }
+        caption { font-weight: bold; }
         /*]]>*/
         </style>
         <script src="sorttable.js"></script>
@@ -214,8 +317,16 @@ class SourceFile(object):
         <body>
         <p><a href="index.html">&lArr; Back</a> | Go to line #<input type="number" id="goto" /></p>
         <h1>""" + source_name + """</h1>
-        <div><table class="sortable">
-        <thead><tr><th>Cov</th><th>Line</th><th class="sorttable_nosort">Source</th></tr></thead>
+        <div>
+        <table id="summary">
+        <caption>Summary</caption>
+        <tr><td>Lines</td><td>""" + lines_stats + """</td></tr>
+        <tr><td>Branches</td><td>""" + branch_stats + """</td></tr>
+        <tr><td>Calls</td><td>""" + call_stats + """</td></tr>
+        </ul>
+        </table>
+        <table class="sortable" id="source">
+        <thead><tr><th>Branches</th><th>Cov</th><th>Line</th><th class="sorttable_nosort">Source</th></tr></thead>
         <tbody>
         """]
         result.extend(line.to_html() for line in self.source_code)
@@ -283,6 +394,28 @@ def copy_sorttable_js(directory: str) -> None:
     copy(join(dirname(__file__), 'sorttable.js'), directory)
 
 
+def to_percentage(covered: int, total: int, good_percent: float, normal_percent: float) -> (str, str):
+    if total == 0:
+        return ('---', 'na')
+    elif covered == total:
+        return ('100.00', 'all')
+    elif covered == 0:
+        return ('0.00', 'zero')
+
+    percent = (100 * covered) / total
+    coverage_percent = '{:.2f}'.format(percent)
+    if coverage_percent == '100.00':
+        coverage_percent = '99.99'
+    elif coverage_percent == '0.00':
+        coverage_percent = '0.01'
+    if percent >= good_percent:
+        coverage_health = 'good'
+    elif percent >= normal_percent:
+        coverage_health = 'normal'
+    else:
+        coverage_health = 'bad'
+    return (coverage_percent, coverage_health)
+
 
 def html_index(source_files: iter([SourceFile]), compile_root: str) -> str:
     """
@@ -290,32 +423,19 @@ def html_index(source_files: iter([SourceFile]), compile_root: str) -> str:
     """
     def single_summary(source_file: SourceFile) -> str:
         (covered, lines) = source_file.coverage_stats()
-        if lines == 0:
-            coverage_percent = '---'
-            coverage_health = 'na'
-        elif covered == lines:
-            coverage_percent = '100.00'
-            coverage_health = 'all'
-        elif covered == 0:
-            coverage_percent = '0.00'
-            coverage_health = 'zero'
-        else:
-            percent = (100 * covered) / lines
-            coverage_percent = '{:.2f}'.format(percent)
-            if coverage_percent == '100.00':
-                coverage_percent = '99.99'
-            elif coverage_percent == '0.00':
-                coverage_percent = '0.01'
-            if percent >= 90:
-                coverage_health = 'good'
-            elif percent >= 75:
-                coverage_health = 'normal'
-            else:
-                coverage_health = 'bad'
+        (br_covered, br_count, _, _) = source_file.branch_stats()
+        (coverage_percent, coverage_health) = to_percentage(covered, lines, 90, 75)
+        (branch_percent, branch_health) = to_percentage(br_covered, br_count, 75, 50)
 
-        return '<tr><td><a href="{3}">{0}</a></td><td class="cov-health-{1}">{2}%</td>'.format(
-            escape(source_file.source_name), coverage_health, coverage_percent,
-            to_html_filename(source_file.source_name)
+        return '''<tr>
+                    <td><a href="{}">{}</a></td>
+                    <td class="cov-health-{}" title="{}/{}">{}%</td>
+                    <td class="cov-health-{}" title="{}/{}">{}%</td>
+                  </tr>'''.format(
+            to_html_filename(source_file.source_name),
+            escape(source_file.source_name),
+            coverage_health, covered, lines, coverage_percent,
+            branch_health, br_covered, br_count, branch_percent
         )
 
     title = escape(compile_root)
@@ -332,7 +452,8 @@ def html_index(source_files: iter([SourceFile]), compile_root: str) -> str:
     .cov-health-good { background-color: yellow; }
     .cov-health-normal { background-color: orange; }
     .cov-health-bad { background-color: red; }
-    td:last-child { text-align: right; }
+    td { text-align: right; }
+    td:first-child { text-align: left; }
     table { border-collapse: collapse; }
     tr { border: 1px solid black; }
     td { padding: 2px; }
@@ -343,7 +464,7 @@ def html_index(source_files: iter([SourceFile]), compile_root: str) -> str:
     <body>
     <h1>Coverage report for """ + title + """</h1>
     <div><table class="sortable">
-    <thead><tr><th>File</th><th>Line cov.</th></tr></thead>
+    <thead><tr><th>File</th><th>Line cov.</th><th>Br. cov.</th></tr></thead>
     <tbody>
     """]
 
