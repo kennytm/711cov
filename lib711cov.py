@@ -38,6 +38,7 @@ def find_with_ext(abs_root: str, compile_root: str, ext: str) -> iter([str]):
     """
     for dirpath, dirnames, filenames in walk(abs_root):
         rpath = relpath(dirpath, start=compile_root)
+        dirnames[:] = [x for x in dirnames if x not in {'.git'}]
         for fn in filenames:
             if splitext(fn)[1] == ext:
                 yield join(rpath, fn)
