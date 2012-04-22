@@ -283,7 +283,10 @@ class SourceFile(object):
                     continue
                 function_match = SourceFunction.regex.match(line)
                 if function_match:
-                    linenum = source_lines[-1].linenum + 1
+                    if source_lines:
+                        linenum = source_lines[-1].linenum + 1
+                    else:
+                        linenum = 1
                     source_functions.append(SourceFunction.from_gcov_match(linenum, function_match))
                     continue
 
