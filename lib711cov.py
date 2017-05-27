@@ -337,6 +337,7 @@ class SourceFile(object):
         with Popen(['c++filt'], stdin=PIPE, stdout=PIPE, universal_newlines=True) as proc:
             for func in self.source_functions:
                 proc.stdin.write(func.name + '\n')
+                proc.stdin.flush()
                 func.pretty_name = proc.stdout.readline().rstrip('\n\r')
 
     def to_html(self) -> str:
@@ -358,6 +359,7 @@ class SourceFile(object):
         <!DOCTYPE html>
         <html>
         <head>
+        <meta charset="utf-8">
         <title>Coverage report of file """ + source_name + """</title>
         <style type="text/css">
         /*<![CDATA[*/
